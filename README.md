@@ -6,7 +6,7 @@ A simple, modern to-do list app built with React and TypeScript.
 
 - Add, edit, and delete tasks
 - Mark tasks as complete/incomplete
-- Tasks are saved in your browser (localStorage)
+- Tasks are saved in Supabase
 - Responsive, clean, and modern UI
 
 ## How to Use
