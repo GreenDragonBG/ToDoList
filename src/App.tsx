@@ -7,6 +7,9 @@ import {
   Draggable,
   DropResult
 } from "@hello-pangea/dnd";
+import supabase from './data/supabase';
+import { UserProvider, useUser } from './contexts/UserContext';
+import LoginRegister from './components/LoginRegister';
 
 const AppBackground = styled.div`
   min-height: 100vh;
@@ -177,33 +180,92 @@ interface Todo {
 const getColumnTasks = (tasks: Todo[], status: 'todo' | 'doing' | 'done') =>
   tasks.filter(t => t.status === status);
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
+  const { user, logout, deleteProfile } = useUser();
   const [todos, setTodos] = useState<Todo[]>([]);
   const [editId, setEditId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
 
   useEffect(() => {
-    const stored = localStorage.getItem('todos');
-    if (stored) setTodos(JSON.parse(stored));
-  }, []);
+    if (!user) return;
+    // Fetch tasks from Supabase on load for current user
+    const fetchTasks = async () => {
+      const { data, error } = await supabase.from('Tasks').select().eq('userId', user.id);
+      if (error) {
+        alert('Failed to fetch tasks from database');
+        return;
+      }
+      if (data) {
+        setTodos(
+          data.map((task: any) => ({
+            id: task.id.toString(),
+            text: task.Description,
+            status:
+              task.Space === 'To Be Done'
+                ? 'todo'
+                : task.Space === 'Is Being Done'
+                ? 'doing'
+                : 'done',
+          }))
+        );
+      }
+    };
+    fetchTasks();
+  }, [user]);
 
-  useEffect(() => {
-    localStorage.setItem('todos', JSON.stringify(todos));
-  }, [todos]);
-
-  const handleAddTask = (text: string) => {
-    if (!text.trim()) return;
-    setTodos(prev => [
-      ...prev,
-      { id: Date.now().toString(), text: text.trim(), status: 'todo' }
-    ]);
+  const handleAddTask = async (text: string) => {
+    if (!text.trim() || !user) return;
+    // Insert into Supabase with userId
+    const { data, error } = await supabase
+      .from('Tasks')
+      .insert([{ Description: text.trim(), Space: 'To Be Done', userId: user.id }])
+      .select();
+    if (error) {
+      alert('Failed to add task to database');
+      return;
+    }
+    const newTask = data && data[0];
+    if (newTask) {
+      setTodos(prev => [
+        ...prev,
+        { id: newTask.id.toString(), text: newTask.Description, status: 'todo' }
+      ]);
+    }
   };
 
-  const deleteTodo = (id: string) => {
+  const deleteTodo = async (id: string) => {
+    if (!user) return;
+    // Remove from Supabase for current user
+    const { error } = await supabase
+      .from('Tasks')
+      .delete()
+      .eq('id', id)
+      .eq('userId', user.id);
+    if (error) {
+      alert('Failed to delete task from database');
+      return;
+    }
     setTodos(prev => prev.filter(todo => todo.id !== id));
   };
 
-  const moveTodo = (id: string, newStatus: 'todo' | 'doing' | 'done') => {
+  const moveTodo = async (id: string, newStatus: 'todo' | 'doing' | 'done') => {
+    if (!user) return;
+    // Update in Supabase for current user
+    let newSpace =
+      newStatus === 'todo'
+        ? 'To Be Done'
+        : newStatus === 'doing'
+        ? 'Is Being Done'
+        : 'Is Done';
+    const { error } = await supabase
+      .from('Tasks')
+      .update({ Space: newSpace })
+      .eq('id', id)
+      .eq('userId', user.id);
+    if (error) {
+      alert('Failed to update task status in database');
+      return;
+    }
     setTodos(prev => prev.map(todo => todo.id === id ? { ...todo, status: newStatus } : todo));
   };
 
@@ -229,16 +291,44 @@ const App: React.FC = () => {
     const { source, destination, draggableId } = result;
     if (source.droppableId === destination.droppableId && source.index === destination.index) return;
     const newStatus = destination.droppableId as 'todo' | 'doing' | 'done';
-    setTodos(prev =>
-      prev.map(todo =>
-        todo.id === draggableId ? { ...todo, status: newStatus } : todo
-      )
-    );
+    moveTodo(draggableId, newStatus);
   };
+
+  if (!user) return <LoginRegister />;
 
   return (
     <AppBackground>
       <Header onAddTask={handleAddTask} />
+      <button onClick={logout} style={{ position: 'fixed', top: 20, right: 20, zIndex: 2000, background: '#232a36', color: '#e6e6e6', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer' }}>Logout</button>
+      <button
+        onClick={async () => {
+          const username = prompt('Type your username to confirm:');
+          const password = prompt('Type your password to confirm:');
+          if (!username || !password) return;
+          if (username !== user.username) {
+            alert('Username does not match.');
+            return;
+          }
+          // Check password
+          const { data, error } = await supabase
+            .from('Users')
+            .select('id')
+            .eq('id', user.id)
+            .eq('password', password)
+            .single();
+          if (error || !data) {
+            alert('Password is incorrect.');
+            return;
+          }
+          if (window.confirm('Are you sure you want to delete your profile? This will remove your account and all your tasks.')) {
+            const ok = await deleteProfile();
+            if (!ok) alert('Failed to delete profile.');
+          }
+        }}
+        style={{ position: 'fixed', top: 60, right: 20, zIndex: 2000, background: '#e06c75', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px', cursor: 'pointer' }}
+      >
+        Delete Profile
+      </button>
       <CenteredContainer>
         <Board>
           <DragDropContext onDragEnd={onDragEnd}>
@@ -287,5 +377,11 @@ const App: React.FC = () => {
     </AppBackground>
   );
 };
+
+const App: React.FC = () => (
+  <UserProvider>
+    <AppContent />
+  </UserProvider>
+);
 
 export default App; 
