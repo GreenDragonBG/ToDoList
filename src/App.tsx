@@ -175,10 +175,13 @@ interface Todo {
   id: string;
   text: string;
   status: 'todo' | 'doing' | 'done';
+  order?: number; // Added order field
 }
 
 const getColumnTasks = (tasks: Todo[], status: 'todo' | 'doing' | 'done') =>
-  tasks.filter(t => t.status === status);
+  tasks
+    .filter(t => t.status === status)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
 const AppContent: React.FC = () => {
   const { user, logout, deleteProfile } = useUser();
@@ -206,6 +209,7 @@ const AppContent: React.FC = () => {
                 : task.Space === 'Is Being Done'
                 ? 'doing'
                 : 'done',
+            order: task.order, // Ensure order is fetched
           }))
         );
       }
@@ -215,10 +219,12 @@ const AppContent: React.FC = () => {
 
   const handleAddTask = async (text: string) => {
     if (!text.trim() || !user) return;
-    // Insert into Supabase with userId
+    // Find max order in 'To Be Done' column
+    const maxOrder = Math.max(0, ...todos.filter(t => t.status === 'todo').map(t => t.order ?? 0));
+    // Insert into Supabase with userId and order
     const { data, error } = await supabase
       .from('Tasks')
-      .insert([{ Description: text.trim(), Space: 'To Be Done', userId: user.id }])
+      .insert([{ Description: text.trim(), Space: 'To Be Done', userId: user.id, order: maxOrder + 1 }])
       .select();
     if (error) {
       alert('Failed to add task to database');
@@ -228,7 +234,7 @@ const AppContent: React.FC = () => {
     if (newTask) {
       setTodos(prev => [
         ...prev,
-        { id: newTask.id.toString(), text: newTask.Description, status: 'todo' }
+        { id: newTask.id.toString(), text: newTask.Description, status: 'todo', order: newTask.order },
       ]);
     }
   };
@@ -287,11 +293,63 @@ const AppContent: React.FC = () => {
   ];
 
   const onDragEnd = (result: DropResult) => {
+    if (!user) return;
     if (!result.destination) return;
     const { source, destination, draggableId } = result;
     if (source.droppableId === destination.droppableId && source.index === destination.index) return;
     const newStatus = destination.droppableId as 'todo' | 'doing' | 'done';
-    moveTodo(draggableId, newStatus);
+
+    // Get tasks in source and destination columns
+    const sourceTasks = getColumnTasks(todos, source.droppableId as Todo['status']);
+    const destTasks = getColumnTasks(todos, destination.droppableId as Todo['status']);
+
+    // Find the task being moved
+    const movingTask = todos.find(t => t.id === draggableId);
+    if (!movingTask) return;
+
+    let newTodos = [...todos];
+
+    // Remove from source
+    if (source.droppableId === destination.droppableId) {
+      // Reorder within the same column
+      const reordered = Array.from(sourceTasks);
+      const [removed] = reordered.splice(source.index, 1);
+      reordered.splice(destination.index, 0, removed);
+      // Update order
+      reordered.forEach((task, idx) => {
+        newTodos = newTodos.map(t => t.id === task.id ? { ...t, order: idx + 1 } : t);
+      });
+    } else {
+      // Remove from source
+      const newSource = Array.from(sourceTasks);
+      const [removed] = newSource.splice(source.index, 1);
+      // Insert into destination
+      const newDest = Array.from(destTasks);
+      removed.status = newStatus;
+      newDest.splice(destination.index, 0, removed);
+      // Update order in source
+      newSource.forEach((task, idx) => {
+        newTodos = newTodos.map(t => t.id === task.id ? { ...t, order: idx + 1 } : t);
+      });
+      // Update order in destination
+      newDest.forEach((task, idx) => {
+        newTodos = newTodos.map(t => t.id === task.id ? { ...t, status: newStatus, order: idx + 1 } : t);
+      });
+    }
+
+    setTodos(newTodos);
+
+    // Update the database asynchronously
+    const updates = newTodos
+      .filter(t => t.status === newStatus)
+      .map(t =>
+        supabase
+          .from('Tasks')
+          .update({ Space: t.status === 'todo' ? 'To Be Done' : t.status === 'doing' ? 'Is Being Done' : 'Is Done', order: t.order })
+          .eq('id', t.id)
+          .eq('userId', user.id)
+      );
+    Promise.all(updates);
   };
 
   if (!user) return <LoginRegister />;
